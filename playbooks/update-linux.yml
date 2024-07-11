@@ -1,0 +1,137 @@
+---
+- name: Update and upgrade apt/yum packages
+  hosts: all
+  become: true # Permite que as tarefas sejam executadas com privilégios de superusuário
+
+  tasks:
+    # Define a variável ansible_pkg_mgr baseada no sistema operacional
+    - name: Determine package manager
+      ansible.builtin.set_fact:
+        ansible_pkg_mgr: "{{ 'apt' if ansible_distribution in ['Ubuntu', 'Debian'] else 'yum' }}"
+
+    # Verifica se deve pular as tarefas de apt ou yum
+    - name: Skip tasks for unmanaged package manager
+      ansible.builtin.debug:
+        msg: "Package manager '{{ ansible_pkg_mgr }}' is not supported or recognized. Skipping tasks."
+      when: ansible_pkg_mgr not in ['apt', 'yum']
+
+    # Verifica se há atualizações disponíveis para pacotes apt
+    - name: Check for apt updates
+      when: ansible_pkg_mgr == 'apt'
+      ansible.builtin.shell: |
+        apt list --upgradable
+      register: apt_updates_available
+
+    # Verifica se há atualizações disponíveis para pacotes yum
+    - name: Check for yum updates
+      when: ansible_pkg_mgr == 'yum'
+      ansible.builtin.shell: |
+        yum check-update
+      register: yum_updates_available
+
+    # Atualiza o cache de pacotes apt
+    - name: Update packages with apt
+      when: ansible_pkg_mgr == 'apt'
+      ansible.builtin.apt:
+        update_cache: true
+      register: apt_update_result
+
+    # Atualiza o cache de pacotes yum
+    - name: Update packages with yum
+      when: ansible_pkg_mgr == 'yum'
+      ansible.builtin.yum:
+        name: "*"
+        state: latest # noqa: package-latest
+      register: yum_update_result
+
+    # Realiza o upgrade de distribuição para pacotes apt
+    - name: Upgrade packages with apt
+      when: ansible_pkg_mgr == 'apt'
+      ansible.builtin.apt:
+        upgrade: dist
+      register: apt_upgrade_result
+
+    # Realiza o upgrade de distribuição para pacotes yum
+    - name: Upgrade packages with yum
+      when: ansible_pkg_mgr == 'yum'
+      ansible.builtin.yum:
+        name: "*"
+        state: latest # noqa: package-latest
+        exclude: kernel*
+      register: yum_upgrade_result
+
+    # Verifica se é necessário reiniciar o sistema no Debian/Ubuntu
+    - name: Check if reboot is required on Debian/Ubuntu
+      when: ansible_pkg_mgr == 'apt'
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required_apt
+
+    # Verifica se é necessário reiniciar o sistema no CentOS/RHEL
+    - name: Check if reboot is required on CentOS/RHEL
+      when: ansible_pkg_mgr == 'yum'
+      ansible.builtin.shell: |
+        needs-restarting -r || echo "none"
+      register: reboot_required_yum
+
+    # Obtém a lista de pacotes que exigem reboot no Debian/Ubuntu
+    - name: Get the list of packages requiring a reboot on Debian/Ubuntu
+      when: ansible_pkg_mgr == 'apt' and reboot_required_apt.stat.exists
+      ansible.builtin.shell: |
+        cat /var/run/reboot-required.pkgs
+      register: reboot_required_pkgs_apt
+
+    # Obtém a lista de pacotes que exigem reboot no CentOS/RHEL
+    - name: Get the list of packages requiring a reboot on CentOS/RHEL
+      when: ansible_pkg_mgr == 'yum' and reboot_required_yum.stdout != "none"
+      ansible.builtin.shell: |
+        yum needs-restarting -r | grep -v "kernel-" || echo "none"
+      register: reboot_required_pkgs_yum
+
+    # Exibe as atualizações disponíveis para pacotes apt
+    - name: Display apt updates available
+      when: ansible_pkg_mgr == 'apt'
+      ansible.builtin.debug:
+        msg: "Pacotes apt disponíveis para atualização: {{ apt_updates_available.stdout_lines }}"
+
+    # Exibe as atualizações disponíveis para pacotes yum
+    - name: Display yum updates available
+      when: ansible_pkg_mgr == 'yum'
+      ansible.builtin.debug:
+        msg: "Pacotes yum disponíveis para atualização: {{ yum_updates_available.stdout_lines }}"
+
+    # Exibe o resultado da atualização de pacotes apt
+    - name: Show apt update result
+      when: ansible_pkg_mgr == 'apt'
+      ansible.builtin.debug:
+        var: apt_update_result
+
+    # Exibe o resultado da atualização de pacotes yum
+    - name: Show yum update result
+      when: ansible_pkg_mgr == 'yum'
+      ansible.builtin.debug:
+        var: yum_update_result
+
+    # Exibe o resultado do upgrade de pacotes apt
+    - name: Show apt upgrade result
+      when: ansible_pkg_mgr == 'apt'
+      ansible.builtin.debug:
+        var: apt_upgrade_result
+
+    # Exibe o resultado do upgrade de pacotes yum
+    - name: Show yum upgrade result
+      when: ansible_pkg_mgr == 'yum'
+      ansible.builtin.debug:
+        var: yum_upgrade_result
+
+    # Notifica se é necessário reiniciar o sistema e lista os pacotes que exigem reboot no Debian/Ubuntu
+    - name: Notify if reboot is required and list the packages on Debian/Ubuntu
+      when: ansible_pkg_mgr == 'apt' and reboot_required_apt.stat.exists
+      ansible.builtin.debug:
+        msg: "Reboot is required for {{ inventory_hostname }}. Packages requiring reboot: {{ reboot_required_pkgs_apt.stdout_lines }}"
+
+    # Notifica se é necessário reiniciar o sistema e lista os pacotes que exigem reboot no CentOS/RHEL
+    - name: Notify if reboot is required and list the packages on CentOS/RHEL
+      when: ansible_pkg_mgr == 'yum' and reboot_required_yum.stdout != "none"
+      ansible.builtin.debug:
+        msg: "Reboot is required for {{ inventory_hostname }}. Packages requiring reboot: {{ reboot_required_pkgs_yum.stdout_lines }}"
